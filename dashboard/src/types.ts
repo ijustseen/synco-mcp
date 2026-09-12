@@ -79,3 +79,16 @@ export type DashboardState = {
   warnings: Warning[];
   counts: { agents: number; tasks: number; claims: number; warnings: number };
 };
+
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  repositoryUrl?: string;
+  eventCount?: number;
+};
+
+export type SessionState = {
+  user: { id: string; username: string; createdAt: string };
+  projects: ProjectSummary[];
+  activeProjectId: string | null;
+};

@@ -14,6 +14,7 @@ const EVENT_TYPES = [
   "task_completed",
   "handoff_created",
   "conflict_detected",
+  "claims_released",
   "agent_status_changed",
   "manual_log",
 ] as const;
@@ -47,7 +48,7 @@ function toFeedEvent(event: StreamEvent): FeedEvent {
   };
 }
 
-export function useDeskLive() {
+export function useDeskLive(projectId: string) {
   const [state, setState] = useState<DashboardState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState<LiveStatus>("connecting");
@@ -63,6 +64,9 @@ export function useDeskLive() {
   useEffect(() => {
     let cancelled = false;
     let source: EventSource | null = null;
+    setState(null);
+    setError(null);
+    setLive("connecting");
     let poll: number | undefined;
     let refreshTimer: number | undefined;
     let reconnectTimer: number | undefined;
@@ -87,7 +91,7 @@ export function useDeskLive() {
 
     const refresh = async () => {
       try {
-        const next = await loadState();
+        const next = await loadState(projectId);
         if (cancelled) return;
         setState(next);
         setError(null);
@@ -126,7 +130,7 @@ export function useDeskLive() {
 
     const connect = () => {
       source?.close();
-      source = new EventSource(eventsUrl());
+      source = new EventSource(eventsUrl(projectId));
       ready = false;
 
       source.onopen = () => {
@@ -171,7 +175,7 @@ export function useDeskLive() {
       if (refreshTimer) window.clearTimeout(refreshTimer);
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
     };
-  }, []);
+  }, [projectId]);
 
   return { state, error, live, freshIds, now, updatedAt };
 }

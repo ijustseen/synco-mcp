@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "prompt",
+        "prompt": "synco-mcp coordinates this repo. Your first tool calls this session must be register_agent then get_agent_context. Do not answer the user before those calls."
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "type": "prompt",
+        "prompt": "Remind the agent of the synco-mcp protocol: call get_agent_context before other work. If this turn will edit files, declare_change_intent first. If this turn edited files, report_change before the final reply."
+      }
+    ],
+    "stop": [
+      {
+        "type": "prompt",
+        "prompt": "If this turn created or edited files and the agent did not call report_change, send a follow-up telling it to call report_change now, and update_task_status or release_claims if it holds any. If the agent only answered a question without editing files, do nothing.",
+        "loop_limit": 1
+      }
+    ]
+  }
+}

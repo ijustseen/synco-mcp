@@ -15,4 +15,18 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Host adapters and CLI scripts run as plain Node processes, not through tsc.
+    files: [".cursor/hooks/**/*.mjs", "integrations/**/*.mjs", "scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        fetch: "readonly",
+        URL: "readonly",
+        URLSearchParams: "readonly",
+        AbortSignal: "readonly",
+      },
+    },
+  },
 );

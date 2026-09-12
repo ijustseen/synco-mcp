@@ -7,19 +7,25 @@ import type {
   Handoff,
   Project,
   ProjectEvent,
+  ProjectMember,
   ResourceClaim,
   ResourceType,
+  Session,
   Task,
   TaskStatus,
+  UserRecord,
 } from "../../domain/types.js";
 import type {
   agents,
   changeReports,
   handoffs,
   projectEvents,
+  projectMembers,
   projects,
   resourceClaims,
+  sessions,
   tasks,
+  users,
 } from "../database/schema.js";
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -29,6 +35,9 @@ type ReportRow = typeof changeReports.$inferSelect;
 type EventRow = typeof projectEvents.$inferSelect;
 type ClaimRow = typeof resourceClaims.$inferSelect;
 type HandoffRow = typeof handoffs.$inferSelect;
+type UserRow = typeof users.$inferSelect;
+type SessionRow = typeof sessions.$inferSelect;
+type MemberRow = typeof projectMembers.$inferSelect;
 
 function optional(value: string | null | undefined): string | undefined {
   return value ?? undefined;
@@ -132,6 +141,34 @@ export function mapHandoff(row: HandoffRow): Handoff {
     importantFiles: JSON.parse(row.importantFiles),
     knownIssues: JSON.parse(row.knownIssues),
     nextSteps: JSON.parse(row.nextSteps),
+    createdAt: row.createdAt,
+  };
+}
+
+export function mapUserRecord(row: UserRow): UserRecord {
+  return {
+    id: row.id,
+    username: row.username,
+    passwordHash: row.passwordHash,
+    createdAt: row.createdAt,
+  };
+}
+
+export function mapSession(row: SessionRow): Session {
+  return {
+    token: row.token,
+    userId: row.userId,
+    activeProjectId: optional(row.activeProjectId),
+    expiresAt: row.expiresAt,
+    createdAt: row.createdAt,
+  };
+}
+
+export function mapMember(row: MemberRow): ProjectMember {
+  return {
+    projectId: row.projectId,
+    userId: row.userId,
+    role: "owner",
     createdAt: row.createdAt,
   };
 }

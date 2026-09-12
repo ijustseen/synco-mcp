@@ -1,4 +1,4 @@
-import { index, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -114,3 +114,45 @@ export const handoffs = sqliteTable(
   },
   (table) => [index("handoffs_project_created_idx").on(table.projectId, table.createdAt)],
 );
+
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    username: text("username").notNull(),
+    passwordHash: text("password_hash").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("users_username_idx").on(table.username)],
+);
+
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    token: text("token").primaryKey(),
+    userId: text("user_id").notNull(),
+    activeProjectId: text("active_project_id"),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("sessions_user_idx").on(table.userId)],
+);
+
+export const projectMembers = sqliteTable(
+  "project_members",
+  {
+    projectId: text("project_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.userId] }),
+    index("members_user_idx").on(table.userId),
+  ],
+);
+
+export const workspaceSettings = sqliteTable("workspace_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});

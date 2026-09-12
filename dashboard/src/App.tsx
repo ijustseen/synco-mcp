@@ -1,7 +1,19 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { addManualLog } from "./api";
+import { addManualLog, createProject, logout, setActiveProject } from "./api";
+import { AuthGate } from "./AuthGate";
+import {
+  IconAgents,
+  IconAlert,
+  IconChart,
+  IconFile,
+  IconList,
+  IconPlus,
+  IconPulse,
+  IconSwap,
+  Logo,
+} from "./icons";
 import { useDeskLive } from "./live";
-import type { DashboardState, FeedEvent } from "./types";
+import type { DashboardState, FeedEvent, Report, SessionState } from "./types";
 
 type FileRow = {
   key: string;
@@ -38,21 +50,23 @@ function formatWhen(value: string, now: number): string {
   return formatTime(value);
 }
 
-function activityByHour(events: FeedEvent[]): Array<{ label: string; count: number }> {
+function activityByQuarter(events: FeedEvent[]): Array<{ label: string; count: number }> {
   if (events.length === 0) return [];
   const buckets = new Map<string, number>();
   for (const event of events) {
     const date = new Date(event.createdAt);
-    const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}-${date.getHours()}`;
+    const quarter = Math.floor(date.getMinutes() / 15);
+    const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}-${date.getHours()}-${quarter}`;
     buckets.set(key, (buckets.get(key) ?? 0) + 1);
   }
   return [...buckets.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .slice(-12)
-    .map(([key, count]) => ({
-      label: `${String(Number(key.split("-").at(-1))).padStart(2, "0")}:00`,
-      count,
-    }));
+    .map(([key, count]) => {
+      const [hour, quarter] = key.split("-").slice(3);
+      const minutes = String(Number(quarter) * 15).padStart(2, "0");
+      return { label: `${String(Number(hour)).padStart(2, "0")}:${minutes}`, count };
+    });
 }
 
 function fileRows(state: DashboardState): FileRow[] {
@@ -101,19 +115,101 @@ function Card({ children, className = "" }: { children: ReactNode; className?: s
   );
 }
 
-function Panel({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+function Panel({
+  title,
+  hint,
+  icon,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  icon?: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <Card className="flex min-h-0 flex-col p-4">
+    <Card className="flex h-full min-h-0 flex-col p-4">
       <div className="mb-3 flex items-baseline justify-between gap-3">
-        <h2 className="text-[15px] font-medium tracking-tight">{title}</h2>
+        <h2 className="flex items-center gap-2 text-[15px] font-medium tracking-tight">
+          {icon && <span className="text-[#E8B84A]">{icon}</span>}
+          {title}
+        </h2>
         {hint && <p className="text-[13px] text-[#9A9A94]">{hint}</p>}
       </div>
-      {children}
+      <div className="flex min-h-0 flex-1 flex-col">{children}</div>
     </Card>
   );
 }
 
-function AddLogForm({ onClose }: { onClose: () => void }) {
+function ChangeReportModal({
+  state,
+  report,
+  onClose,
+}: {
+  state: DashboardState;
+  report: Report;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-20 flex items-center justify-center bg-black/75 px-4 py-8"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-[16px] border border-white/10 bg-[#111111]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+          <div className="min-w-0">
+            <p className="text-[12px] text-[#9A9A94]">ChangeReport</p>
+            <h2 className="mt-1 text-lg font-medium tracking-tight">{report.summary}</h2>
+            <p className="mt-2 text-[13px] text-[#9A9A94]">
+              {agentName(state, report.agentId)}
+              {report.taskId ? ` · ${taskTitle(state, report.taskId)}` : ""} · tests{" "}
+              {report.tests.status.replaceAll("_", " ")}
+              {report.breakingChange ? " · breaking" : ""}
+            </p>
+          </div>
+          <button type="button" className="shrink-0 text-[13px] text-[#9A9A94]" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+          {report.tests.summary && <p className="mb-3 text-sm text-[#D4D4D0]">{report.tests.summary}</p>}
+          {report.affectedAreas.length > 0 && (
+            <p className="mb-3 text-[13px] text-[#9A9A94]">Areas: {report.affectedAreas.join(", ")}</p>
+          )}
+          {report.interfacesChanged.length > 0 && (
+            <div className="mb-4">
+              <p className="text-[12px] text-[#9A9A94]">Interfaces</p>
+              <ul className="mt-1 space-y-1">
+                {report.interfacesChanged.map((item) => (
+                  <li key={item.name} className="text-sm">
+                    <span className="font-data text-[#E8B84A]">{item.name}</span>
+                    <span className="text-[#9A9A94]"> — {item.description}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="space-y-2">
+            {report.files.map((file) => (
+              <div key={`${file.action}-${file.path}`} className="rounded-lg bg-[#070707] px-3 py-2">
+                <p className="font-data text-[12px] text-[#E8B84A]">{file.action}</p>
+                <p className="font-data mt-0.5 text-[13px]">{file.path}</p>
+                <p className="mt-1 text-[13px] text-[#9A9A94]">{file.description}</p>
+              </div>
+            ))}
+          </div>
+          {report.nextSteps[0] && (
+            <p className="mt-4 text-[13px] text-[#D4D4D0]">Next: {report.nextSteps.join(" ")}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddLogForm({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [author, setAuthor] = useState("");
   const [summary, setSummary] = useState("");
   const [busy, setBusy] = useState(false);
@@ -128,7 +224,7 @@ function AddLogForm({ onClose }: { onClose: () => void }) {
           setBusy(true);
           setError(null);
           try {
-            await addManualLog({ summary: summary.trim(), author: author.trim() || undefined });
+            await addManualLog(projectId, { summary: summary.trim(), author: author.trim() || undefined });
             onClose();
           } catch (err) {
             setError(err instanceof Error ? err.message : "Could not add log");
@@ -176,14 +272,21 @@ function AddLogForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function App() {
-  const { state, error, live, freshIds, now } = useDeskLive();
+function Desk({ session, setSession }: { session: SessionState; setSession: (next: SessionState) => void }) {
+  const projectId = session.activeProjectId!;
+  const { state, error, live, freshIds, now } = useDeskLive(projectId);
   const [logOpen, setLogOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
 
   const lead = state?.reports[0];
-  const activity = useMemo(() => (state ? activityByHour(state.events) : []), [state]);
+  const activity = useMemo(() => (state ? activityByQuarter(state.events) : []), [state]);
   const files = useMemo(() => (state ? fileRows(state) : []), [state]);
   const maxActivity = activity.reduce((max, row) => Math.max(max, row.count), 1);
+  const busyElsewhere = session.projects.filter(
+    (project) => project.id !== projectId && (project.eventCount ?? 0) > 0,
+  );
 
   if (error && !state) {
     return (
@@ -200,25 +303,118 @@ export function App() {
 
   return (
     <main className="min-h-screen bg-[#070707] text-[#F5F5F2]">
-      {logOpen && <AddLogForm onClose={() => setLogOpen(false)} />}
+      {logOpen && <AddLogForm projectId={projectId} onClose={() => setLogOpen(false)} />}
+      {reportOpen && lead && (
+        <ChangeReportModal state={state} report={lead} onClose={() => setReportOpen(false)} />
+      )}
 
       <header className="border-b border-white/10 px-5 py-3">
         <div className="mx-auto flex max-w-[1280px] items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Logo className="h-6 w-6 shrink-0" />
             <p className="text-[15px] font-semibold tracking-tight">synco-mcp</p>
-            <span className="font-data text-[12px] text-[#9A9A94]">{state.project.name}</span>
+            <select
+              className="max-w-[280px] rounded-full border border-white/15 bg-[#111111] px-3 py-1 text-[13px] text-[#F5F5F2] outline-none focus:border-[#E8B84A]"
+              value={projectId}
+              onChange={(event) => {
+                void setActiveProject(event.target.value).then(setSession);
+              }}
+            >
+              {session.projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name === project.id
+                    ? project.name
+                    : `${project.name} · ${project.id}`}
+                  {project.eventCount ? ` · ${project.eventCount}` : ""}
+                </option>
+              ))}
+            </select>
+            {creating ? (
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const name = newName.trim();
+                  if (!name) return;
+                  void createProject({ name }).then((next) => {
+                    setSession(next);
+                    setCreating(false);
+                    setNewName("");
+                  });
+                }}
+              >
+                <input
+                  autoFocus
+                  className="w-40 rounded-lg border border-white/10 bg-[#070707] px-2 py-1 text-[13px] outline-none focus:border-[#E8B84A]"
+                  placeholder="New project"
+                  value={newName}
+                  onChange={(event) => setNewName(event.target.value)}
+                />
+                <GoldButton type="submit">Create</GoldButton>
+                <button
+                  type="button"
+                  className="text-[12px] text-[#9A9A94]"
+                  onClick={() => {
+                    setCreating(false);
+                    setNewName("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <button type="button" className="text-[12px] text-[#9A9A94]" onClick={() => setCreating(true)}>
+                + Project
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-2 text-[13px] text-[#9A9A94]">
               <span className={`h-1.5 w-1.5 rounded-full ${live === "sse" ? "live-dot bg-[#E8B84A]" : "bg-[#737373]"}`} />
               {live === "sse" ? "Live" : live === "poll" ? "Polling" : "Connecting"}
             </span>
-            <GoldButton onClick={() => setLogOpen(true)}>Add log</GoldButton>
+            <span className="hidden text-[13px] text-[#9A9A94] sm:inline">{session.user.username}</span>
+            <GoldButton onClick={() => setLogOpen(true)}>
+              <span className="flex items-center gap-1.5">
+                <IconPlus /> Add log
+              </span>
+            </GoldButton>
+            <button
+              type="button"
+              className="text-[13px] text-[#9A9A94]"
+              onClick={() => {
+                void logout();
+                window.location.reload();
+              }}
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </header>
 
       <div className="mx-auto flex max-w-[1280px] flex-col gap-3 px-5 py-4">
+        {state.events.length === 0 && busyElsewhere.length > 0 && (
+          <Card className="px-4 py-3">
+            <p className="text-sm text-[#F5F5F2]">
+              This desk is empty. You have activity on{" "}
+              {busyElsewhere.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  className="font-data text-[#E8B84A] underline-offset-2 hover:underline"
+                  onClick={() => {
+                    void setActiveProject(project.id).then(setSession);
+                  }}
+                >
+                  {project.name} ({project.id}, {project.eventCount} events)
+                </button>
+              ))}
+              . The picker above is the live project — switch it and MCP follows.
+            </p>
+          </Card>
+        )}
+
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             ["Agents", state.counts.agents],
@@ -234,35 +430,27 @@ export function App() {
         </div>
 
         <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr]">
-          <Panel title="Latest change" hint="Agent-declared">
+          <Panel title="Latest change" hint="Agent-declared" icon={<IconPulse />}>
             {lead ? (
-              <div>
-                <p className="text-[17px] font-medium leading-snug tracking-tight">{lead.summary}</p>
-                <p className="mt-2 text-[13px] text-[#9A9A94]">
-                  {agentName(state, lead.agentId)}
-                  {lead.taskId ? ` · ${taskTitle(state, lead.taskId)}` : ""} · tests{" "}
-                  {lead.tests.status.replaceAll("_", " ")}
-                  {lead.breakingChange ? " · breaking" : ""}
-                </p>
-                <div className="mt-3 space-y-2">
-                  {lead.files.map((file) => (
-                    <div key={file.path} className="rounded-lg bg-[#070707] px-3 py-2">
-                      <p className="font-data text-[12px] text-[#E8B84A]">{file.action}</p>
-                      <p className="font-data mt-0.5 text-[13px]">{file.path}</p>
-                      <p className="mt-1 text-[13px] text-[#9A9A94]">{file.description}</p>
-                    </div>
-                  ))}
+              <div className="flex flex-1 flex-col">
+                <button type="button" className="w-full text-left" onClick={() => setReportOpen(true)}>
+                  <p className="text-[17px] font-medium leading-snug tracking-tight">{lead.summary}</p>
+                  <p className="mt-2 text-[13px] text-[#9A9A94]">
+                    {agentName(state, lead.agentId)}
+                    {lead.taskId ? ` · ${taskTitle(state, lead.taskId)}` : ""} · {lead.files.length}{" "}
+                    {lead.files.length === 1 ? "file" : "files"}
+                  </p>
+                </button>
+                <div className="mt-auto pt-4">
+                  <GoldButton onClick={() => setReportOpen(true)}>Open report</GoldButton>
                 </div>
-                {lead.nextSteps[0] && (
-                  <p className="mt-3 text-[13px] text-[#D4D4D0]">Next: {lead.nextSteps.join(" ")}</p>
-                )}
               </div>
             ) : (
               <p className="text-sm text-[#9A9A94]">No ChangeReports yet. An agent must call report_change.</p>
             )}
           </Panel>
 
-          <Panel title="Activity" hint="Events by hour">
+          <Panel title="Activity" hint="Events by 15 min" icon={<IconChart />}>
             {activity.length === 0 ? (
               <p className="text-sm text-[#9A9A94]">No events yet.</p>
             ) : (
@@ -283,7 +471,7 @@ export function App() {
         </div>
 
         <div className="grid gap-3 lg:grid-cols-[1.4fr_280px]">
-          <Panel title="Work log">
+          <Panel title="Work log" icon={<IconList />}>
             {state.events.length === 0 ? (
               <p className="text-sm text-[#9A9A94]">The log is empty.</p>
             ) : (
@@ -310,7 +498,7 @@ export function App() {
             )}
           </Panel>
 
-          <Panel title="Agents">
+          <Panel title="Agents" icon={<IconAgents />}>
             {state.agents.length === 0 ? (
               <p className="text-sm text-[#9A9A94]">None registered.</p>
             ) : (
@@ -333,7 +521,7 @@ export function App() {
           </Panel>
         </div>
 
-        <Panel title="Files they touched" hint="From ChangeReports">
+        <Panel title="Files they touched" hint="From ChangeReports" icon={<IconFile />}>
           {files.length === 0 ? (
             <p className="text-sm text-[#9A9A94]">No declared file changes yet.</p>
           ) : (
@@ -365,14 +553,23 @@ export function App() {
         </Panel>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <Panel title="Corrections" hint="Overlap, not Git locks">
+          <Panel title="Corrections" hint="Overlap, not Git locks" icon={<IconAlert />}>
             {state.warnings.length === 0 ? (
               <p className="text-sm text-[#9A9A94]">No overlapping claims.</p>
             ) : (
               <div className="space-y-2">
                 {state.warnings.map((warning) => (
                   <div key={`${warning.resourcePath}-${warning.detectedAt}`} className="rounded-lg bg-[#070707] px-3 py-2">
-                    <p className="font-data text-[13px]">{warning.resourcePath}</p>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="font-data text-[13px]">{warning.resourcePath}</p>
+                      <span
+                        className={`font-data shrink-0 text-[11px] uppercase tracking-[0.12em] ${
+                          warning.status === "resolved" ? "text-[#737373]" : "text-[#E8B84A]"
+                        }`}
+                      >
+                        {warning.status === "resolved" ? "resolved" : "active"}
+                      </span>
+                    </div>
                     <p className="mt-1 text-[13px] text-[#9A9A94]">
                       {warning.agentIds.map((id) => agentName(state, id)).join(" and ")}
                     </p>
@@ -381,7 +578,7 @@ export function App() {
               </div>
             )}
           </Panel>
-          <Panel title="Handoffs">
+          <Panel title="Handoffs" icon={<IconSwap />}>
             {state.handoffs.length === 0 ? (
               <p className="text-sm text-[#9A9A94]">No handoffs yet.</p>
             ) : (
@@ -401,5 +598,13 @@ export function App() {
         </div>
       </div>
     </main>
+  );
+}
+
+export function App() {
+  return (
+    <AuthGate>
+      {(session, setSession) => <Desk session={session} setSession={setSession} />}
+    </AuthGate>
   );
 }

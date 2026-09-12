@@ -26,6 +26,7 @@ export const EVENT_TYPES = [
   "task_completed",
   "handoff_created",
   "conflict_detected",
+  "claims_released",
   "agent_status_changed",
   "manual_log",
 ] as const;
@@ -39,6 +40,31 @@ export type Project = {
   repositoryUrl?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type User = {
+  id: string;
+  username: string;
+  createdAt: string;
+};
+
+export type UserRecord = User & {
+  passwordHash: string;
+};
+
+export type Session = {
+  token: string;
+  userId: string;
+  activeProjectId?: string;
+  expiresAt: string;
+  createdAt: string;
+};
+
+export type ProjectMember = {
+  projectId: string;
+  userId: string;
+  role: "owner";
+  createdAt: string;
 };
 
 export type Agent = {

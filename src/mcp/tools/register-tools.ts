@@ -11,6 +11,7 @@ import {
   getResourceClaimsInput,
   projectIdInput,
   registerAgentInput,
+  releaseClaimsInput,
   reportChangeInput,
   updateTaskStatusInput,
 } from "../../shared/validation/schemas.js";
@@ -21,6 +22,10 @@ function ok(data: unknown) {
     content: [{ type: "text" as const, text }],
     structuredContent: data as Record<string, unknown>,
   };
+}
+
+function onDesk<T extends { projectId?: string }>(service: CoordinationService, input: T): T & { projectId: string } {
+  return { ...input, projectId: service.deskProjectId() };
 }
 
 function fail(error: unknown) {
@@ -47,12 +52,12 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     "register_agent",
     {
       description:
-        "Register this agent in a synco-mcp project and receive a compact snapshot of current coordination state.",
+        "Register this agent on the project selected in the dashboard. Omit projectId — the desk picker fills it. Do not pass leftover default.",
       inputSchema: registerAgentInput,
     },
     async (input) => {
       try {
-        return ok(service.registerAgent(input));
+        return ok(service.registerAgent(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -63,12 +68,12 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     "get_project_state",
     {
       description:
-        "Return a compact project snapshot: active agents, tasks, claims, recent declared change reports, events, and overlap warnings. Poll this — hosts may not push live updates into the model.",
+        "Return a compact snapshot of the project selected in the dashboard. Omit projectId — the desk picker is the source of truth.",
       inputSchema: projectIdInput,
     },
     async (input) => {
       try {
-        return ok(service.getProjectState(input.projectId));
+        return ok(service.getProjectState(onDesk(service, input).projectId));
       } catch (error) {
         return fail(error);
       }
@@ -78,12 +83,12 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
   server.registerTool(
     "create_task",
     {
-      description: "Create a coordination task in the project. Does not assign it.",
+      description: "Create a coordination task on the dashboard desk. Omit projectId. Does not assign it.",
       inputSchema: createTaskInput,
     },
     async (input) => {
       try {
-        return ok(service.createTask(input));
+        return ok(service.createTask(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -99,7 +104,7 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     },
     async (input) => {
       try {
-        return ok(service.claimTask(input));
+        return ok(service.claimTask(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -115,7 +120,7 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     },
     async (input) => {
       try {
-        return ok(service.updateTaskStatus(input));
+        return ok(service.updateTaskStatus(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -131,7 +136,7 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     },
     async (input) => {
       try {
-        return ok(service.declareChangeIntent(input));
+        return ok(service.declareChangeIntent(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -147,7 +152,7 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     },
     async (input) => {
       try {
-        return ok(service.reportChange(input));
+        return ok(service.reportChange(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -163,7 +168,7 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     },
     async (input) => {
       try {
-        return ok(service.getRecentChanges(input));
+        return ok(service.getRecentChanges(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -178,7 +183,23 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     },
     async (input) => {
       try {
-        return ok(service.getResourceClaims(input));
+        return ok(service.getResourceClaims(onDesk(service, input)));
+      } catch (error) {
+        return fail(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "release_claims",
+    {
+      description:
+        "Release your own active resource claims. Omit claimIds and paths to release all of them. Use this when you declared intent without a task, or finished editing before the task is done.",
+      inputSchema: releaseClaimsInput,
+    },
+    async (input) => {
+      try {
+        return ok(service.releaseClaims(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -193,7 +214,7 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     },
     async (input) => {
       try {
-        return ok(service.createHandoff(input));
+        return ok(service.createHandoff(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }
@@ -204,12 +225,12 @@ export function registerCoordinationTools(server: McpServer, service: Coordinati
     "get_agent_context",
     {
       description:
-        "Return context relevant to one agent: current task, claims, recent reports, handoffs, and warnings. Not the full event log.",
+        "Return context for this agent on the dashboard desk: current task, claims, recent reports, handoffs, and warnings. Omit projectId.",
       inputSchema: getAgentContextInput,
     },
     async (input) => {
       try {
-        return ok(service.getAgentContext(input));
+        return ok(service.getAgentContext(onDesk(service, input)));
       } catch (error) {
         return fail(error);
       }

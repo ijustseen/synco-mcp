@@ -215,4 +215,98 @@ describe("coordination service", () => {
     const desk = service.getDashboardState("default");
     expect(desk.events[0]?.type).toBe("manual_log");
   });
+
+  it("releases claims declared without a task", () => {
+    const { service } = runtime();
+    service.registerAgent({ projectId: "default", agentId: "a", name: "A", platform: "cursor" });
+    service.declareChangeIntent({
+      projectId: "default",
+      agentId: "a",
+      summary: "Edit the desk with no task attached",
+      resources: [{ type: "file", path: "dashboard/src/App.tsx" }],
+    });
+
+    const released = service.releaseClaims({ projectId: "default", agentId: "a" });
+    expect(released.released).toBe(1);
+    expect(released.remainingClaims).toHaveLength(0);
+    expect(service.getResourceClaims({ projectId: "default" }).claims).toHaveLength(0);
+    expect(service.getDashboardState("default").events[0]?.type).toBe("claims_released");
+  });
+
+  it("does not warn when one agent claims a directory and files inside it", () => {
+    const { service } = runtime();
+    service.registerAgent({ projectId: "default", agentId: "a", name: "A", platform: "cursor" });
+    const result = service.declareChangeIntent({
+      projectId: "default",
+      agentId: "a",
+      summary: "Rework the whole auth folder",
+      resources: [
+        { type: "directory", path: "src/auth" },
+        { type: "file", path: "src/auth/session.ts" },
+      ],
+    });
+
+    expect(result.warnings).toHaveLength(0);
+    expect(service.getDashboardState("default").counts.warnings).toBe(0);
+  });
+
+  it("never releases another agent's claims", () => {
+    const { service } = runtime();
+    service.registerAgent({ projectId: "default", agentId: "a", name: "A", platform: "cursor" });
+    service.registerAgent({ projectId: "default", agentId: "b", name: "B", platform: "claude" });
+    const mine = service.declareChangeIntent({
+      projectId: "default",
+      agentId: "a",
+      summary: "Mine",
+      resources: [{ type: "file", path: "src/auth/session.ts" }],
+    });
+
+    const attempt = service.releaseClaims({
+      projectId: "default",
+      agentId: "b",
+      claimIds: [mine.claims[0]!.id],
+    });
+    expect(attempt.released).toBe(0);
+    expect(service.getResourceClaims({ projectId: "default" }).claims).toHaveLength(1);
+  });
+
+  it("reports resolved overlaps with a real path, never a headline", () => {
+    const { service } = runtime();
+    service.registerAgent({ projectId: "default", agentId: "a", name: "A", platform: "cursor" });
+    service.registerAgent({ projectId: "default", agentId: "b", name: "B", platform: "claude" });
+    service.declareChangeIntent({
+      projectId: "default",
+      agentId: "a",
+      summary: "First",
+      resources: [{ type: "file", path: "src/auth/session.ts" }],
+    });
+    service.declareChangeIntent({
+      projectId: "default",
+      agentId: "b",
+      summary: "Second",
+      resources: [{ type: "file", path: "src/auth/session.ts" }],
+    });
+
+    service.releaseClaims({ projectId: "default", agentId: "a" });
+    service.releaseClaims({ projectId: "default", agentId: "b" });
+
+    const desk = service.getDashboardState("default");
+    expect(desk.counts.warnings).toBe(0);
+    for (const warning of desk.warnings) {
+      expect(warning.status).toBe("resolved");
+      expect(warning.resourcePath).toBe("src/auth/session.ts");
+      expect(warning.resourcePath).not.toContain(" ");
+    }
+  });
+
+  it("moves an agent that stopped calling tools to offline", () => {
+    const { service, repos } = runtime();
+    service.registerAgent({ projectId: "default", agentId: "a", name: "A", platform: "cursor" });
+    expect(service.getProjectState("default").activeAgents[0]?.status).toBe("idle");
+
+    const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    repos.agents.touch("a", stale, { status: "working" });
+
+    expect(service.getProjectState("default").activeAgents[0]?.status).toBe("offline");
+  });
 });

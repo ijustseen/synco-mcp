@@ -95,4 +95,35 @@ CREATE TABLE IF NOT EXISTS handoffs (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS handoffs_project_created_idx ON handoffs (project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users (username);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  active_project_id TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
+
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS members_user_idx ON project_members (user_id);
+
+CREATE TABLE IF NOT EXISTS workspace_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;

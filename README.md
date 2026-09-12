@@ -29,13 +29,18 @@ cp .env.example .env
 
 | Endpoint | Role |
 | --- | --- |
-| `http://127.0.0.1:3847/` | Dashboard |
+| `http://127.0.0.1:3847/` | Dashboard (login + project picker) |
 | `POST /mcp` | MCP Streamable HTTP |
+| `GET /api/auth/status` | Whether any user exists yet |
+| `POST /api/auth/register` · `POST /api/auth/login` | Dashboard username/password |
+| `GET /api/auth/me` · `PUT /api/auth/active-project` | Session + current project |
+| `GET /api/projects` · `POST /api/projects` | List / create your projects |
 | `GET /api/projects/:projectId` | Dashboard snapshot |
 | `GET /api/projects/:projectId/events` | SSE live feed |
+| `GET /api/guard/edit` | Edit guard for host hooks: may this agent write this path? |
 | `GET /health` | Liveness |
 
-Default bind: `127.0.0.1:3847`. Default project id: `default`.
+Default bind: `127.0.0.1:3847`. A blank database seeds one leftover project named `default` so tests and first boot have somewhere to write; it is not the live desk.
 
 stdio mode does **not** serve the page. For several agents on one project use HTTP. stdio is only for clients that must spawn a local process:
 
@@ -79,6 +84,7 @@ Later hosted mode (Convex + Render) is out of scope. Services do not import `bet
 | `report_change` | Structured ChangeReport (`source: agent_declared`) |
 | `get_recent_changes` | Compact by default; `detail: "full"` for the raw report |
 | `get_resource_claims` | Active claims |
+| `release_claims` | Drop your own claims. Needed when you claimed without a task |
 | `create_handoff` | Structured context for the next agent |
 | `get_agent_context` | Task, claims, reports, handoffs, warnings — not the full log |
 
@@ -115,7 +121,7 @@ Cursor CLI and Claude Code — use `"type": "http"`, not `"streamable-http"` (Cu
 
 stdio example is in `examples/mcp.stdio.json`. Run it from the repo root so `tsx src/stdio.ts` resolves.
 
-If `SYNCO_API_KEY` is set, send `Authorization: Bearer <key>`.
+If `SYNCO_API_KEY` is set, send `Authorization: Bearer <key>` on `/mcp`. Dashboard auth is a separate cookie session (see below).
 
 ## Make agents actually use synco-mcp
 
@@ -135,7 +141,60 @@ The agent-facing protocol itself lives in [`AGENT_INSTRUCTIONS.md`](./AGENT_INST
 | After a work unit that touched files | `report_change` in the **same** turn | Pure Q&A — do not invent a ChangeReport |
 | End of a claimed task | `update_task_status(done)` or `blocked` + `create_handoff` | No owned task |
 
-Give each host a **stable unique `agentId`** (`cursor-grok`, `claude-code`, `opencode`, …). Do not reuse another agent's id. Default `projectId` is `default`.
+Give each host a **stable unique `agentId`** (`cursor-grok`, `claude-code`, `opencode`, …). Do not reuse another agent's id. **`projectId` is the dashboard picker.** Agents may omit it; the server uses the desk selection. `default` is only a leftover bootstrap id on a blank database, not a special project.
+
+### 0. One command, every host, every repo
+
+```bash
+npm run init            # or: npx synco init
+```
+
+`synco init` installs the **edit guard** into every agent host it finds on the machine, at
+the user level, so it covers all your repositories at once:
+
+| Host | What it writes | Blocking mechanism |
+| --- | --- | --- |
+| Cursor | `~/.cursor/hooks.json` + `~/.cursor/hooks/synco/` | `preToolUse` returns `permission: deny` |
+| Claude Code | `~/.claude/settings.json` + `~/.claude/hooks/synco/` | `PreToolUse` exits 2, stderr goes back to the model |
+| opencode | `~/.config/opencode/plugins/` | plugin `tool.execute.before` throws |
+
+Useful flags: `--dry-run`, `--agent-id=cursor-andrew`, `--url=https://synco.example.com`,
+`--api-key=…`, `--project=<id>`, or a host name (`synco init cursor`) to limit the scope.
+Existing hooks in those files are preserved, and re-running is a no-op.
+
+**A repo opts in with `.synco.json`** at its root (`synco init` writes one in the current
+project):
+
+```json
+{ "url": "http://127.0.0.1:3847" }
+```
+
+Without that file the guard stays completely silent, so a global install does not interfere
+with unrelated repositories. Per-host identity lives in `synco-host.json` next to the
+adapter — that is where each host gets its own `agentId`.
+
+### How the guard decides
+
+The policy lives on the server, not in the hook. Before a file write the adapter asks
+`GET /api/guard/edit?projectId=…&agentId=…&path=…`, and the server answers whether that
+agent holds an active claim covering that exact path:
+
+| Answer | Meaning |
+| --- | --- |
+| `NOT_REGISTERED` | Call `register_agent` first |
+| `NO_INTENT` | No active claim at all — call `declare_change_intent` |
+| `PATH_NOT_DECLARED` | Claims exist but not for this file; the message lists what was declared |
+| `OK` | Allowed, plus `overlappingAgentIds` if someone else claims the same path |
+
+This is why it is host-agnostic: adding a host means writing a ~20-line adapter that
+translates one payload shape and one refusal format. It is also why the check survives
+opencode never firing `tool.execute.before` for MCP calls — nothing local has to observe
+the `declare_change_intent` call.
+
+The adapters **fail open** on every unknown: no `.synco.json`, no `agentId`, an unreachable
+server, a non-write tool, or a malformed payload all allow the edit. A coordination tool
+must not be able to make a repository uneditable. Note that shell commands are not gated —
+an agent that runs `sed -i` bypasses the guard.
 
 ### 1. Project files that every host reads
 
@@ -147,7 +206,7 @@ Put the copy-paste block from `AGENT_INSTRUCTIONS.md` into files the agent host 
 | Cursor, Claude Code, Codex, many others | `AGENTS.md` at the repo root | Same block; keep `agentId` as a placeholder or per-clone value |
 | Claude Code | `CLAUDE.md` | Paste the same block if you do not rely on `AGENTS.md` |
 
-Example Cursor rule:
+This repo ships `.cursor/rules/synco-mcp.mdc` already. Its shape:
 
 ```markdown
 ---
@@ -159,7 +218,7 @@ alwaysApply: true
 
 If synco-mcp tools are available, you MUST use them. Documentation is not optional.
 
-Project id: `default`. Agent id: `<AGENT_ID>`.
+The project is the dashboard picker. Omit `projectId`. Agent id: `<AGENT_ID>`.
 
 First tool calls in a session: `register_agent` then `get_agent_context`.
 Start of every later turn: `get_agent_context` before other work.
@@ -171,7 +230,9 @@ Git is the source of truth. ChangeReports are agent-declared, not verified diffs
 Claims warn; they do not lock. Poll — hosts do not push events into you.
 ```
 
-Replace `<AGENT_ID>` per host. Commit the rule and `AGENTS.md` so every clone gets them.
+The shipped rule tells each host to derive a stable `agentId` from its own name instead of
+carrying a `<AGENT_ID>` placeholder that an agent would paste literally. `AGENTS.md` at the
+root covers hosts that do not read `.cursor/rules`.
 
 ### 2. User rule in the editor (survives chat summaries)
 
@@ -197,7 +258,9 @@ Do this on every machine / every developer profile that talks to the shared serv
 
 Rules can still be ignored. Hooks run outside the model.
 
-**Cursor** project hooks (`.cursor/hooks.json`), committed to the repo:
+The blocking guard comes from `synco init` (section 0) because it needs a per-developer
+`agentId`. On top of it, this repo ships `.cursor/hooks.json` with three prompt hooks that
+nudge the protocol at session, turn and stop boundaries:
 
 ```json
 {
@@ -226,28 +289,56 @@ Rules can still be ignored. Hooks run outside the model.
 }
 ```
 
-Stronger (optional): a `preToolUse` command hook that **denies** `Write` / `StrReplace` until a `declare_change_intent` ran in the same session. That is the closest thing to a hard “before”. Check Cursor → Hooks after adding files; restart Cursor if they do not load.
+Check Cursor → Hooks after pulling; restart Cursor if they do not load.
 
-Other hosts: use their equivalent of session-start / stop hooks, or put the same block in the system prompt. synco-mcp cannot reach into Claude Code or opencode for you.
+### 4. What reaches hosts with no hook system at all
+
+Windsurf, Cline, Copilot and friends have rules but no interception point. For them the
+server does the talking, and it needs no local setup:
+
+- The MCP `instructions` string states the protocol as mandatory at connect time.
+- `register_agent`, `get_agent_context`, `declare_change_intent` and `report_change` all
+  return a `protocol` object with `nextRequiredCall`, plus `openItems` naming actual
+  lapses — for example an `in_progress` task with declared intent and no ChangeReport, or
+  claims held with no open task.
+
+That is advisory, not enforcement, but it lands inside the model's context on every call
+and cannot be skipped by a developer forgetting to configure something.
 
 ### Checklist
 
 A new developer on a shared project is not done after `npm start` and pasting the MCP URL. They need:
 
 1. HTTP MCP client pointed at `http://127.0.0.1:3847/mcp` (see above).
-2. Unique `agentId` filled into the project rule / `AGENTS.md`.
-3. User rule on their own Cursor (or other host) profile.
-4. Project hooks committed and enabled.
+2. `npm run init` once per machine, with `--agent-id=` if they want a personal id.
+3. `.synco.json` in every repo that should be guarded.
+4. User rule on their own Cursor (or other host) profile.
 5. Confirmation on the dashboard: after the first real prompt, an `agent_registered` event and later `intent_declared` / `change_reported` — not only chat replies.
 
 If the dashboard stays empty, the agent is not using MCP. Fix the host, not the server.
 
+## Dashboard login and projects
+
+The desk is no longer an open single-project page.
+
+1. Open `/`. If nobody has registered yet, create the first account.
+2. The first user on a blank install inherits an unowned leftover project if one exists (historically named `default`). That id is not special.
+3. Later users start with no projects — they create one from the desk. They never see someone else's leftover.
+4. The header select is the **active project**. Snapshot, live events, and Add log follow that project.
+5. `+ Project` creates another project and switches to it.
+
+Username: 3–32 characters, starts with a letter. Password: at least 8 characters. Session cookie: `synco_session` (httpOnly, 30 days).
+
+Agents do **not** log in. The project they write to is the one selected in the dashboard picker. `projectId` on MCP tools is optional and ignored when a desk selection exists.
+
 ## Security
 
 - Without `SYNCO_API_KEY` the server **refuses** to bind anything except loopback.
+- Dashboard `/api/*` (except register/login/status) requires a signed-in user who is a member of that project.
+- `/mcp` still uses the optional shared `SYNCO_API_KEY`, not the dashboard password.
 - Do not expose `/mcp` or `/api` to the internet without a key.
 - Secrets and tokens are not logged.
-- API keys are MVP auth, not a full permission model.
+- This is username/password on a self-hosted box, not OAuth or per-agent ACLs.
 
 ## Tests
 
@@ -264,7 +355,9 @@ Coverage includes transactional task claims, idempotent task creation, resource 
 - Dashboard live updates do not imply that an LLM host will interrupt a running agent.
 - One Node process, in-memory EventBus. Not multi-instance.
 - No OAuth, RAG, vector DB, or agent orchestration engine.
-- Default UI is a single project (`default`).
+- Dashboard users only see projects they own. `default` is not shared and is not the live desk unless someone actually selects it.
+- Agent ids are global. Registering again on a new desk selection moves the agent to that project.
+- An agent is marked `offline` after `SYNCO_AGENT_OFFLINE_MS` (default 5 min) without a tool call. It is inferred from `lastSeenAt`, not a real heartbeat.
 
 ## Stack
 

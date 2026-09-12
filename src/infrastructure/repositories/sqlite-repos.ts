@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne } from "drizzle-orm";
 import { AppError, ErrorCodes } from "../../domain/errors.js";
 import type {
   Agent,
@@ -7,9 +7,12 @@ import type {
   Handoff,
   Project,
   ProjectEvent,
+  ProjectMember,
   ResourceClaim,
+  Session,
   Task,
   TaskStatus,
+  UserRecord,
 } from "../../domain/types.js";
 import type { DatabaseContext } from "../database/client.js";
 import {
@@ -17,18 +20,25 @@ import {
   changeReports,
   handoffs,
   projectEvents,
+  projectMembers,
   projects,
   resourceClaims,
+  sessions,
   tasks,
+  users,
+  workspaceSettings,
 } from "../database/schema.js";
 import {
   mapAgent,
   mapClaim,
   mapEvent,
   mapHandoff,
+  mapMember,
   mapProject,
   mapReport,
+  mapSession,
   mapTask,
+  mapUserRecord,
 } from "./mappers.js";
 
 export function createRepositories(ctx: DatabaseContext) {
@@ -58,6 +68,140 @@ export function createRepositories(ctx: DatabaseContext) {
           })
           .run();
         return project;
+      },
+      listAll(): Project[] {
+        return db.select().from(projects).orderBy(asc(projects.createdAt)).all().map(mapProject);
+      },
+      listForUser(userId: string): Project[] {
+        return db
+          .select({ project: projects })
+          .from(projectMembers)
+          .innerJoin(projects, eq(projects.id, projectMembers.projectId))
+          .where(eq(projectMembers.userId, userId))
+          .orderBy(asc(projects.createdAt))
+          .all()
+          .map((row) => mapProject(row.project));
+      },
+      eventCount(projectId: string): number {
+        const row = ctx.sqlite
+          .prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id = ?")
+          .get(projectId) as { n: number };
+        return Number(row.n);
+      },
+      // Lets the desk name the project agents actually write to, so an empty
+      // project is never mistaken for agents ignoring MCP.
+      activityCounts(projectId: string): { agents: number; reports: number; events: number } {
+        const count = (table: string) =>
+          Number(
+            (
+              ctx.sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).get(projectId) as {
+                n: number;
+              }
+            ).n,
+          );
+        return { agents: count("agents"), reports: count("change_reports"), events: count("events") };
+      },
+    },
+
+    users: {
+      count(): number {
+        const row = ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number };
+        return Number(row.n);
+      },
+      getById(id: string): UserRecord | undefined {
+        const row = db.select().from(users).where(eq(users.id, id)).get();
+        return row ? mapUserRecord(row) : undefined;
+      },
+      getByUsername(username: string): UserRecord | undefined {
+        const row = db.select().from(users).where(eq(users.username, username)).get();
+        return row ? mapUserRecord(row) : undefined;
+      },
+      insert(user: UserRecord): UserRecord {
+        db.insert(users)
+          .values({
+            id: user.id,
+            username: user.username,
+            passwordHash: user.passwordHash,
+            createdAt: user.createdAt,
+          })
+          .run();
+        return user;
+      },
+    },
+
+    sessions: {
+      getByToken(token: string): Session | undefined {
+        const row = db.select().from(sessions).where(eq(sessions.token, token)).get();
+        return row ? mapSession(row) : undefined;
+      },
+      latestForUser(userId: string): Session | undefined {
+        const row = db
+          .select()
+          .from(sessions)
+          .where(eq(sessions.userId, userId))
+          .orderBy(desc(sessions.createdAt))
+          .limit(1)
+          .get();
+        return row ? mapSession(row) : undefined;
+      },
+      latestActiveProjectId(): string | undefined {
+        const row = db
+          .select({ activeProjectId: sessions.activeProjectId })
+          .from(sessions)
+          .where(isNotNull(sessions.activeProjectId))
+          .orderBy(desc(sessions.createdAt))
+          .limit(1)
+          .get();
+        return row?.activeProjectId ?? undefined;
+      },
+      insert(session: Session): Session {
+        db.insert(sessions)
+          .values({
+            token: session.token,
+            userId: session.userId,
+            activeProjectId: session.activeProjectId ?? null,
+            expiresAt: session.expiresAt,
+            createdAt: session.createdAt,
+          })
+          .run();
+        return session;
+      },
+      setActiveProject(token: string, projectId: string | undefined): void {
+        db.update(sessions)
+          .set({ activeProjectId: projectId ?? null })
+          .where(eq(sessions.token, token))
+          .run();
+      },
+      delete(token: string): void {
+        db.delete(sessions).where(eq(sessions.token, token)).run();
+      },
+    },
+
+    members: {
+      get(projectId: string, userId: string): ProjectMember | undefined {
+        const row = db
+          .select()
+          .from(projectMembers)
+          .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)))
+          .get();
+        return row ? mapMember(row) : undefined;
+      },
+      countByProject(projectId: string): number {
+        const row = ctx.sqlite
+          .prepare("SELECT COUNT(*) AS n FROM project_members WHERE project_id = ?")
+          .get(projectId) as { n: number };
+        return Number(row.n);
+      },
+      insert(member: ProjectMember): ProjectMember {
+        db.insert(projectMembers)
+          .values({
+            projectId: member.projectId,
+            userId: member.userId,
+            role: member.role,
+            createdAt: member.createdAt,
+          })
+          .run();
+        return member;
       },
     },
 
@@ -130,6 +274,23 @@ export function createRepositories(ctx: DatabaseContext) {
           })
           .where(eq(agents.id, id))
           .run();
+      },
+      moveToProject(id: string, projectId: string): void {
+        db.update(agents).set({ projectId, currentTaskId: null }).where(eq(agents.id, id)).run();
+      },
+      markStaleOffline(projectId: string, seenBefore: string): number {
+        const result = db
+          .update(agents)
+          .set({ status: "offline" })
+          .where(
+            and(
+              eq(agents.projectId, projectId),
+              lt(agents.lastSeenAt, seenBefore),
+              ne(agents.status, "offline"),
+            ),
+          )
+          .run();
+        return result.changes;
       },
     },
 
@@ -394,6 +555,40 @@ export function createRepositories(ctx: DatabaseContext) {
           .run();
         return result.changes;
       },
+      listActiveByAgent(projectId: string, agentId: string, limit: number): ResourceClaim[] {
+        return db
+          .select()
+          .from(resourceClaims)
+          .where(
+            and(
+              eq(resourceClaims.projectId, projectId),
+              eq(resourceClaims.agentId, agentId),
+              eq(resourceClaims.status, "active"),
+            ),
+          )
+          .orderBy(desc(resourceClaims.createdAt))
+          .limit(limit)
+          .all()
+          .map(mapClaim);
+      },
+      releaseByIds(projectId: string, agentId: string, ids: string[], releasedAt: string): number {
+        if (ids.length === 0) {
+          return 0;
+        }
+        const result = db
+          .update(resourceClaims)
+          .set({ status: "released", releasedAt })
+          .where(
+            and(
+              eq(resourceClaims.projectId, projectId),
+              eq(resourceClaims.agentId, agentId),
+              eq(resourceClaims.status, "active"),
+              inArray(resourceClaims.id, ids),
+            ),
+          )
+          .run();
+        return result.changes;
+      },
     },
 
     handoffs: {
@@ -425,6 +620,21 @@ export function createRepositories(ctx: DatabaseContext) {
           .limit(limit)
           .all()
           .map(mapHandoff);
+      },
+    },
+
+    settings: {
+      get(key: string): string | undefined {
+        const row = db.select().from(workspaceSettings).where(eq(workspaceSettings.key, key)).get();
+        return row?.value;
+      },
+      set(key: string, value: string): void {
+        const existing = db.select().from(workspaceSettings).where(eq(workspaceSettings.key, key)).get();
+        if (existing) {
+          db.update(workspaceSettings).set({ value }).where(eq(workspaceSettings.key, key)).run();
+          return;
+        }
+        db.insert(workspaceSettings).values({ key, value }).run();
       },
     },
   };

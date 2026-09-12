@@ -60,6 +60,7 @@ describe("MCP tools over Streamable HTTP", () => {
         "create_task",
         "claim_task",
         "report_change",
+        "release_claims",
         "create_handoff",
       ]),
     );
@@ -96,6 +97,40 @@ describe("MCP tools over Streamable HTTP", () => {
       }),
     );
     expect(claimed.ok).toBe(true);
+    await client.close();
+  });
+
+  it("accepts MCP calls that omit projectId and writes to the desk", async () => {
+    const client = await connect();
+    const registered = parseTool(
+      await client.callTool({
+        name: "register_agent",
+        arguments: {
+          agentId: "agent-desk",
+          name: "Desk writer",
+          platform: "cursor",
+        },
+      }),
+    );
+    expect(registered.agent).toMatchObject({ id: "agent-desk", projectId: "default" });
+    expect(registered.desk).toMatchObject({ id: "default" });
+
+    const created = parseTool(
+      await client.callTool({
+        name: "create_task",
+        arguments: { title: "Follow the dashboard picker" },
+      }),
+    );
+    const task = created.task as { id: string; projectId: string };
+    expect(task.projectId).toBe("default");
+
+    const context = parseTool(
+      await client.callTool({
+        name: "get_agent_context",
+        arguments: { agentId: "agent-desk" },
+      }),
+    );
+    expect(context.agent).toMatchObject({ id: "agent-desk" });
     await client.close();
   });
 });

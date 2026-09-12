@@ -8,8 +8,29 @@ import { AppError, ErrorCodes } from "../domain/errors.js";
 import type { Runtime } from "../application/runtime.js";
 import { attachProjectSse } from "../infrastructure/realtime/sse.js";
 import { config } from "../shared/config.js";
-import { requireApiKey } from "./auth.js";
+import {
+  clearSessionCookie,
+  requireApiKey,
+  sessionTokenFrom,
+  setSessionCookie,
+} from "./auth.js";
 import { createMcpServer } from "./mcp.js";
+
+function sendError(res: Response, error: unknown, fallback: string): void {
+  if (error instanceof AppError) {
+    res.status(error.httpStatus).json(error.toJSON());
+    return;
+  }
+  res.status(500).json({ code: ErrorCodes.VALIDATION_ERROR, message: fallback });
+}
+
+function authBody(result: { user: unknown; projects: unknown; activeProjectId?: string }) {
+  return {
+    user: result.user,
+    projects: result.projects,
+    activeProjectId: result.activeProjectId ?? null,
+  };
+}
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dashboardDir = path.resolve(here, "../../dashboard/dist");
@@ -43,7 +64,7 @@ async function handleMcp(runtime: Runtime, req: Request, res: Response): Promise
 
 export function createHttpApp(runtime: Runtime) {
   const app = express();
-  app.use(cors({ origin: true, exposedHeaders: ["Mcp-Session-Id"] }));
+  app.use(cors({ origin: true, credentials: true, exposedHeaders: ["Mcp-Session-Id"] }));
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/health", (_req, res) => {
@@ -70,22 +91,103 @@ export function createHttpApp(runtime: Runtime) {
     });
   });
 
-  app.get("/api/projects/:projectId", requireApiKey, (req, res) => {
+  // Edit guard for host hooks. Uses the agent API key, not a dashboard session:
+  // the caller is a hook running next to an agent, not a browser.
+  app.get("/api/guard/edit", requireApiKey, (req, res) => {
     try {
-      const projectId = String(req.params.projectId);
-      res.json(runtime.service.getDashboardState(projectId));
+      res.json(
+        runtime.service.checkEditGuard({
+          projectId: runtime.service.deskProjectId(),
+          agentId: typeof req.query.agentId === "string" ? req.query.agentId : "",
+          path: typeof req.query.path === "string" ? req.query.path : undefined,
+        }),
+      );
     } catch (error) {
-      if (error instanceof AppError) {
-        res.status(error.httpStatus).json(error.toJSON());
-        return;
-      }
-      res.status(500).json({ code: ErrorCodes.VALIDATION_ERROR, message: "Failed to load project" });
+      sendError(res, error, "Guard check failed");
     }
   });
 
-  app.post("/api/projects/:projectId/logs", requireApiKey, (req, res) => {
+  app.get("/api/auth/status", (_req, res) => {
+    res.json({ hasUsers: runtime.auth.hasUsers() });
+  });
+
+  app.post("/api/auth/register", (req, res) => {
+    try {
+      const result = runtime.auth.register(req.body);
+      setSessionCookie(res, result.session.token);
+      res.status(201).json(authBody(result));
+    } catch (error) {
+      sendError(res, error, "Failed to register");
+    }
+  });
+
+  app.post("/api/auth/login", (req, res) => {
+    try {
+      const result = runtime.auth.login(req.body);
+      setSessionCookie(res, result.session.token);
+      res.json(authBody(result));
+    } catch (error) {
+      sendError(res, error, "Failed to sign in");
+    }
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    runtime.auth.logout(sessionTokenFrom(req));
+    clearSessionCookie(res);
+    res.json({ ok: true });
+  });
+
+  app.get("/api/auth/me", (req, res) => {
+    try {
+      res.json(authBody(runtime.auth.me(sessionTokenFrom(req))));
+    } catch (error) {
+      sendError(res, error, "Failed to load session");
+    }
+  });
+
+  app.put("/api/auth/active-project", (req, res) => {
+    try {
+      res.json(authBody(runtime.auth.setActiveProject(sessionTokenFrom(req), req.body)));
+    } catch (error) {
+      sendError(res, error, "Failed to set active project");
+    }
+  });
+
+  app.get("/api/projects", (req, res) => {
+    try {
+      const session = runtime.auth.requireSession(sessionTokenFrom(req));
+      res.json({ projects: runtime.service.listProjects(session.userId) });
+    } catch (error) {
+      sendError(res, error, "Failed to list projects");
+    }
+  });
+
+  app.post("/api/projects", (req, res) => {
+    try {
+      const session = runtime.auth.requireSession(sessionTokenFrom(req));
+      const project = runtime.service.createProject(session.userId, req.body);
+      const result = runtime.auth.setActiveProject(session.token, { projectId: project.id });
+      setSessionCookie(res, result.session.token);
+      res.status(201).json({ project, ...authBody(result) });
+    } catch (error) {
+      sendError(res, error, "Failed to create project");
+    }
+  });
+
+  app.get("/api/projects/:projectId", (req, res) => {
     try {
       const projectId = String(req.params.projectId);
+      runtime.auth.requireProjectAccess(sessionTokenFrom(req), projectId);
+      res.json(runtime.service.getDashboardState(projectId));
+    } catch (error) {
+      sendError(res, error, "Failed to load project");
+    }
+  });
+
+  app.post("/api/projects/:projectId/logs", (req, res) => {
+    try {
+      const projectId = String(req.params.projectId);
+      runtime.auth.requireProjectAccess(sessionTokenFrom(req), projectId);
       const body = (req.body ?? {}) as { summary?: string; author?: string };
       const result = runtime.service.addManualLog({
         projectId,
@@ -94,17 +196,14 @@ export function createHttpApp(runtime: Runtime) {
       });
       res.status(201).json(result);
     } catch (error) {
-      if (error instanceof AppError) {
-        res.status(error.httpStatus).json(error.toJSON());
-        return;
-      }
-      res.status(500).json({ code: ErrorCodes.VALIDATION_ERROR, message: "Failed to add log" });
+      sendError(res, error, "Failed to add log");
     }
   });
 
-  app.get("/api/projects/:projectId/events", requireApiKey, (req, res) => {
+  app.get("/api/projects/:projectId/events", (req, res) => {
     try {
       const projectId = String(req.params.projectId);
+      runtime.auth.requireProjectAccess(sessionTokenFrom(req), projectId);
       const lastEventId =
         (typeof req.header("last-event-id") === "string" && req.header("last-event-id")) ||
         (typeof req.query.after === "string" ? req.query.after : undefined);
@@ -117,11 +216,7 @@ export function createHttpApp(runtime: Runtime) {
         replay,
       });
     } catch (error) {
-      if (error instanceof AppError) {
-        res.status(error.httpStatus).json(error.toJSON());
-        return;
-      }
-      res.status(500).json({ code: "SSE_ERROR", message: "Failed to subscribe" });
+      sendError(res, error, "Failed to subscribe");
     }
   });
 

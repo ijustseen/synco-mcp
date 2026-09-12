@@ -53,6 +53,8 @@ export function eventHeadline(event: ProjectEvent): string {
       return summary ?? "Handoff created";
     case "conflict_detected":
       return summary ?? "Resource overlap warning";
+    case "claims_released":
+      return summary ?? "Resource claims released";
     case "agent_status_changed":
       return summary ?? "Agent status changed";
     case "manual_log": {

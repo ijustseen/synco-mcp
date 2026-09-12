@@ -12,6 +12,7 @@ export const config = {
   databasePath: path.resolve(env("SYNCO_DATABASE_PATH", "./data/synco.sqlite")),
   defaultProjectId: env("SYNCO_DEFAULT_PROJECT_ID", "default"),
   defaultProjectName: env("SYNCO_DEFAULT_PROJECT_NAME", "synco-mcp"),
+  agentOfflineMs: Number(env("SYNCO_AGENT_OFFLINE_MS", String(5 * 60 * 1000))),
 };
 
 export function isLoopbackHost(host: string): boolean {

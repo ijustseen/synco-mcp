@@ -17,11 +17,15 @@ import { config } from "../../shared/config.js";
 import { findOverlaps, type ResourceRef } from "../../shared/utils/overlap.js";
 import { newId, nowIso } from "../../shared/utils/ids.js";
 import { compactChangeSummary, compactEvent, compactReport } from "../../shared/utils/summaries.js";
+import { slugifyProjectId } from "../../shared/utils/project-id.js";
 import {
   addManualLogInput,
   createHandoffInput,
+  createProjectInput,
   createTaskInput,
   declareIntentInput,
+  editGuardInput,
+  releaseClaimsInput,
   reportChangeInput,
 } from "../../shared/validation/schemas.js";
 
@@ -60,6 +64,60 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
     return repos.events.findByIdempotency(projectId, idempotencyKey);
   }
 
+  // An agent that stopped calling tools is not "working" any more. Nothing
+  // pushes that transition, so any read sweeps it.
+  function markStaleAgentsOffline(projectId: string): void {
+    if (config.agentOfflineMs <= 0) {
+      return;
+    }
+    const seenBefore = new Date(Date.now() - config.agentOfflineMs).toISOString();
+    repos.agents.markStaleOffline(projectId, seenBefore);
+  }
+
+  // Reaches every host, including the ones with no hook system: the model sees
+  // this inside tool results, so no local setup can be skipped.
+  function protocolStatus(projectId: string, agentId: string) {
+    const agent = repos.agents.getById(agentId);
+    const task = agent?.currentTaskId ? repos.tasks.getById(agent.currentTaskId) : undefined;
+    const openTask = task && task.status === "in_progress" ? task : undefined;
+    const claims = repos.claims.listActiveByAgent(projectId, agentId, 100);
+    const reported = openTask
+      ? repos.reports
+          .listByProject(projectId, 40)
+          .some((report) => report.taskId === openTask.id && report.agentId === agentId)
+      : false;
+
+    const openItems: string[] = [];
+    if (claims.length > 0 && !openTask) {
+      openItems.push(
+        `You hold ${claims.length} active claim(s) with no task in progress. Call release_claims when you stop editing.`,
+      );
+    }
+    if (openTask && claims.length > 0 && !reported) {
+      openItems.push(
+        `Task "${openTask.title}" is in progress and you declared intent but published no report_change yet.`,
+      );
+    }
+
+    let nextRequiredCall: string;
+    if (!openTask) {
+      nextRequiredCall = "claim_task (or create_task then claim_task) before editing files";
+    } else if (claims.length === 0) {
+      nextRequiredCall = "declare_change_intent with every path you will touch";
+    } else if (!reported) {
+      nextRequiredCall = "report_change after editing, then update_task_status(done)";
+    } else {
+      nextRequiredCall = "update_task_status(done) to close the task and release claims";
+    }
+
+    return {
+      nextRequiredCall,
+      openItems,
+      reminder:
+        "Before editing: declare_change_intent. After editing: report_change in the same turn. Only a finished task releases claims; anything else needs release_claims.",
+    };
+  }
+
   function computeWarnings(projectId: string): ConflictWarning[] {
     const active = repos.claims.listActive(projectId, 100);
     const groups = new Map<string, ResourceClaim[]>();
@@ -68,6 +126,10 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
       const current = active[i]!;
       for (let j = i + 1; j < active.length; j += 1) {
         const other = active[j]!;
+        // One agent claiming a directory and files inside it is not a conflict.
+        if (other.agentId === current.agentId) {
+          continue;
+        }
         if (
           findOverlaps([{ type: current.resourceType, path: current.resourcePath }], [other]).length > 0
         ) {
@@ -93,24 +155,28 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
       return current;
     }
 
-    return repos.events.listByTypes(projectId, ["conflict_detected"], 8).map((event) => {
+    // No live overlap. Show recently resolved ones, but only where the event
+    // carries real resource paths — never a headline masquerading as a path.
+    return repos.events.listByTypes(projectId, ["conflict_detected"], 8).flatMap((event) => {
       const payload = (event.payload ?? {}) as {
-        summary?: string;
+        resourcePaths?: string[];
         overlappingAgentIds?: string[];
       };
-      return {
-        resourcePath: payload.summary ?? "Resource overlap",
+      const paths = payload.resourcePaths ?? [];
+      return paths.map((resourcePath) => ({
+        resourcePath,
         agentIds: payload.overlappingAgentIds ?? (event.agentId ? [event.agentId] : []),
         taskIds: event.taskId ? [event.taskId] : [],
         claimIds: [],
         detectedAt: event.createdAt,
         status: "resolved" as const,
-      };
+      }));
     });
   }
 
   function snapshot(projectId: string) {
     const project = repos.projects.require(projectId);
+    markStaleAgentsOffline(projectId);
     const activeAgents = repos.agents.listByProject(projectId, DEFAULT_LIMITS.agents);
     const activeTasks = repos.tasks
       .listByProject(projectId, DEFAULT_LIMITS.tasks)
@@ -133,10 +199,39 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
     };
   }
 
+  function resolveProjectId(projectId?: string): string {
+    if (projectId && repos.projects.getById(projectId)) {
+      return projectId;
+    }
+    return readDeskProjectId();
+  }
+
+  function readDeskProjectId(): string {
+    const desk = repos.settings.get("desk_project_id");
+    if (desk && repos.projects.getById(desk)) {
+      return desk;
+    }
+    const fromSession = repos.sessions.latestActiveProjectId();
+    if (fromSession && repos.projects.getById(fromSession)) {
+      return fromSession;
+    }
+    const first = repos.projects.listAll()[0];
+    if (first) {
+      return first.id;
+    }
+    throw new AppError(
+      ErrorCodes.PROJECT_NOT_FOUND,
+      "No project selected. Create one in the dashboard.",
+      undefined,
+      404,
+    );
+  }
+
   function compactSnapshot(projectId: string) {
     const state = snapshot(projectId);
     return {
       project: { id: state.project.id, name: state.project.name },
+      desk: { id: readDeskProjectId(), note: "The project selected in the dashboard. MCP writes here." },
       activeAgents: state.activeAgents.map((agent) => ({
         id: agent.id,
         name: agent.name,
@@ -171,6 +266,9 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
       if (existing) {
         return existing;
       }
+      if (repos.projects.listAll().length > 0) {
+        return undefined;
+      }
       const ts = nowIso();
       return repos.projects.insert({
         id: config.defaultProjectId,
@@ -178,6 +276,42 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
         createdAt: ts,
         updatedAt: ts,
       });
+    },
+
+    deskProjectId() {
+      return readDeskProjectId();
+    },
+
+    listProjects(userId: string) {
+      return repos.projects.listForUser(userId).map((project) => ({
+        ...project,
+        eventCount: repos.projects.eventCount(project.id),
+      }));
+    },
+
+    createProject(userId: string, raw: unknown) {
+      const input = parse(createProjectInput, raw);
+      let id = input.id ?? slugifyProjectId(input.name);
+      if (repos.projects.getById(id)) {
+        if (input.id) {
+          throw new AppError(ErrorCodes.VALIDATION_ERROR, `Project id already exists: ${id}`, { id }, 409);
+        }
+        id = `${id}-${newId().slice(0, 8)}`;
+      }
+      const ts = nowIso();
+      const project = repos.projects.insert({
+        id,
+        name: input.name,
+        createdAt: ts,
+        updatedAt: ts,
+      });
+      repos.members.insert({
+        projectId: project.id,
+        userId,
+        role: "owner",
+        createdAt: ts,
+      });
+      return project;
     },
 
     getProjectState(projectId: string) {
@@ -218,27 +352,26 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
     },
 
     registerAgent(input: {
-      projectId: string;
+      projectId?: string;
       agentId?: string;
       name: string;
       platform: string;
       model?: string;
     }) {
-      repos.projects.require(input.projectId);
+      const projectId = resolveProjectId(input.projectId);
+      repos.projects.require(projectId);
       const ts = nowIso();
       const id = input.agentId ?? newId();
       const existing = repos.agents.getById(id);
-      if (existing && existing.projectId !== input.projectId) {
-        throw new AppError(
-          ErrorCodes.AGENT_PROJECT_MISMATCH,
-          `Agent ${id} already belongs to another project`,
-          { id, projectId: input.projectId, actualProjectId: existing.projectId },
-        );
+      if (existing && existing.projectId !== projectId) {
+        // The desk selection is the live project. An agent follows it instead of
+        // being stuck on the first project it ever registered with.
+        repos.agents.moveToProject(id, projectId);
       }
 
       const agent: Agent = {
         id,
-        projectId: input.projectId,
+        projectId,
         name: input.name,
         platform: input.platform,
         model: input.model,
@@ -250,7 +383,7 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
       const saved = repos.agents.upsert(agent);
       if (!existing) {
         emit({
-          projectId: input.projectId,
+          projectId,
           type: "agent_registered",
           agentId: saved.id,
           payload: { name: saved.name, platform: saved.platform, model: saved.model, summary: `${saved.name} registered` },
@@ -258,17 +391,19 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
       }
       return {
         agent: saved,
-        ...compactSnapshot(input.projectId),
+        ...compactSnapshot(projectId),
+        protocol: protocolStatus(projectId, saved.id),
       };
     },
 
     createTask(raw: {
-      projectId: string;
+      projectId?: string;
       title: string;
       description?: string;
       idempotencyKey?: string;
     }) {
-      const input = parse(createTaskInput, raw);
+      const parsed = parse(createTaskInput, raw);
+      const input = { ...parsed, projectId: resolveProjectId(parsed.projectId) };
       repos.projects.require(input.projectId);
       const replayed = replayIfDuplicate(input.projectId, input.idempotencyKey);
       if (replayed) {
@@ -405,14 +540,15 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
     },
 
     declareChangeIntent(raw: {
-      projectId: string;
+      projectId?: string;
       agentId: string;
       taskId?: string;
       summary: string;
       resources: ResourceRef[];
       idempotencyKey?: string;
     }) {
-      const input = parse(declareIntentInput, raw);
+      const parsed = parse(declareIntentInput, raw);
+      const input = { ...parsed, projectId: resolveProjectId(parsed.projectId) };
       repos.projects.require(input.projectId);
       const agent = repos.agents.requireInProject(input.agentId, input.projectId);
       if (input.taskId) {
@@ -425,6 +561,7 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
           claims: repos.claims.listActive(input.projectId, DEFAULT_LIMITS.claims),
           warnings: computeWarnings(input.projectId),
           note: "Coordination warning only — this is not a Git lock.",
+          protocol: protocolStatus(input.projectId, agent.id),
         };
       }
 
@@ -465,6 +602,7 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
           taskId: input.taskId,
           payload: {
             summary: `Overlap warning on ${overlaps.map((claim) => claim.resourcePath).join(", ")}`,
+            resourcePaths: [...new Set(overlaps.map((claim) => claim.resourcePath))],
             overlappingClaimIds: overlaps.map((claim) => claim.id),
             overlappingAgentIds: [...new Set(overlaps.map((claim) => claim.agentId))],
             note: "Declared overlap. This does not prevent Git conflicts.",
@@ -483,11 +621,12 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
           type: claim.resourceType,
         })),
         note: "Coordination warning only — resource claims are not a Git lock and do not guarantee a conflict-free merge.",
+        protocol: protocolStatus(input.projectId, agent.id),
       };
     },
 
     reportChange(raw: {
-      projectId: string;
+      projectId?: string;
       agentId: string;
       taskId?: string;
       summary: string;
@@ -501,7 +640,8 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
       commitHash?: string;
       idempotencyKey?: string;
     }) {
-      const input = parse(reportChangeInput, raw);
+      const parsed = parse(reportChangeInput, raw);
+      const input = { ...parsed, projectId: resolveProjectId(parsed.projectId) };
       repos.projects.require(input.projectId);
       const agent = repos.agents.requireInProject(input.agentId, input.projectId);
       if (input.taskId) {
@@ -557,6 +697,7 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
         detailed: report,
         source: "agent_declared" as const,
         note: "This is an agent-declared report, not a verified Git diff.",
+        protocol: protocolStatus(input.projectId, agent.id),
       };
     },
 
@@ -589,6 +730,136 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
       return {
         claims: filtered,
         note: "Claims are a coordination signal, not exclusive Git locks.",
+      };
+    },
+
+    // Host-agnostic policy for edit guards. Any host that can run a script
+    // before a file write can ask this instead of reimplementing the rules.
+    checkEditGuard(raw: { projectId?: string; agentId: string; path?: string }) {
+      const input = parse(editGuardInput, raw);
+      const projectId = input.projectId ?? readDeskProjectId();
+      const deny = (code: string, message: string) => ({
+        allowed: false as const,
+        code,
+        message,
+        projectId,
+        agentId: input.agentId,
+        path: input.path,
+      });
+
+      if (!repos.projects.getById(projectId)) {
+        return deny(
+          "PROJECT_NOT_FOUND",
+          `synco-mcp has no project "${projectId}". Check the projectId before editing.`,
+        );
+      }
+
+      const agent = repos.agents.getById(input.agentId);
+      if (!agent || agent.projectId !== projectId) {
+        return deny(
+          "NOT_REGISTERED",
+          `Agent "${input.agentId}" is not registered in project "${projectId}". Call register_agent, then declare_change_intent for the paths you will touch.`,
+        );
+      }
+
+      const mine = repos.claims.listActiveByAgent(projectId, input.agentId, 100);
+      if (mine.length === 0) {
+        return deny(
+          "NO_INTENT",
+          "No active change intent. Call declare_change_intent with every path you are about to touch, then retry.",
+        );
+      }
+
+      if (input.path) {
+        const covered = findOverlaps([{ type: "file", path: input.path }], mine);
+        if (covered.length === 0) {
+          return deny(
+            "PATH_NOT_DECLARED",
+            `${input.path} is not in your declared intent. Call declare_change_intent for it (declared: ${mine
+              .map((claim) => claim.resourcePath)
+              .slice(0, 8)
+              .join(", ")}).`,
+          );
+        }
+      }
+
+      const others = input.path
+        ? findOverlaps(
+            [{ type: "file", path: input.path }],
+            repos.claims.listActive(projectId, 100).filter((claim) => claim.agentId !== input.agentId),
+          )
+        : [];
+
+      return {
+        allowed: true as const,
+        code: "OK",
+        message: "Declared intent covers this path.",
+        projectId,
+        agentId: input.agentId,
+        path: input.path,
+        overlappingAgentIds: [...new Set(others.map((claim) => claim.agentId))],
+      };
+    },
+
+    releaseClaims(raw: {
+      projectId: string;
+      agentId: string;
+      claimIds?: string[];
+      paths?: string[];
+      reason?: string;
+    }) {
+      const input = parse(releaseClaimsInput, raw);
+      repos.projects.require(input.projectId);
+      const agent = repos.agents.requireInProject(input.agentId, input.projectId);
+      const mine = repos.claims.listActiveByAgent(input.projectId, agent.id, 100);
+
+      const selected = mine.filter((claim) => {
+        const byId = input.claimIds ? input.claimIds.includes(claim.id) : false;
+        const byPath = input.paths ? input.paths.includes(claim.resourcePath) : false;
+        if (!input.claimIds && !input.paths) {
+          return true;
+        }
+        return byId || byPath;
+      });
+
+      if (selected.length === 0) {
+        return {
+          released: 0,
+          claims: [],
+          remainingClaims: mine,
+          note: "Nothing to release. You can only release your own active claims.",
+        };
+      }
+
+      const ts = nowIso();
+      const released = repos.claims.releaseByIds(
+        input.projectId,
+        agent.id,
+        selected.map((claim) => claim.id),
+        ts,
+      );
+      const paths = selected.map((claim) => claim.resourcePath);
+
+      emit({
+        projectId: input.projectId,
+        type: "claims_released",
+        agentId: agent.id,
+        payload: {
+          summary: `${agent.name} released ${released} claim${released === 1 ? "" : "s"}: ${paths.join(", ")}`,
+          resourcePaths: paths,
+          reason: input.reason,
+        },
+      });
+
+      return {
+        released,
+        claims: selected.map((claim) => ({
+          id: claim.id,
+          type: claim.resourceType,
+          path: claim.resourcePath,
+        })),
+        remainingClaims: repos.claims.listActiveByAgent(input.projectId, agent.id, DEFAULT_LIMITS.claims),
+        warnings: computeWarnings(input.projectId),
       };
     },
 
@@ -719,6 +990,7 @@ export function createCoordinationService(repos: Repositories, bus: EventBus) {
         })),
         warnings: computeWarnings(input.projectId),
         recentSignals: relevantEvents.map(compactEvent),
+        protocol: protocolStatus(input.projectId, agent.id),
       };
     },
   };

@@ -1,6 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
 import { config, isLoopbackHost } from "../shared/config.js";
 
+export const SESSION_COOKIE = "synco_session";
+const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+
 export function getRequestApiKey(req: Request): string | undefined {
   const header = req.header("authorization");
   if (header?.toLowerCase().startsWith("bearer ")) {
@@ -8,6 +11,35 @@ export function getRequestApiKey(req: Request): string | undefined {
   }
   const query = req.query.apiKey;
   return typeof query === "string" && query.length > 0 ? query : undefined;
+}
+
+export function readCookie(req: Request, name: string): string | undefined {
+  const header = req.headers.cookie;
+  if (!header) {
+    return undefined;
+  }
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) {
+      return decodeURIComponent(rest.join("="));
+    }
+  }
+  return undefined;
+}
+
+export function sessionTokenFrom(req: Request): string | undefined {
+  return readCookie(req, SESSION_COOKIE);
+}
+
+export function setSessionCookie(res: Response, token: string): void {
+  res.append(
+    "Set-Cookie",
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE}`,
+  );
+}
+
+export function clearSessionCookie(res: Response): void {
+  res.append("Set-Cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
 export function requireApiKey(req: Request, res: Response, next: NextFunction): void {

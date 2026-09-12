@@ -19,7 +19,7 @@ An agent instruction for synco-mcp should contain all of the following.
 
 ### 1. Identity
 
-- Fixed `agentId` (e.g. `claude-code`, `opencode`, `cursor-1`) and `projectId` (default: `default`).
+- Fixed `agentId` (e.g. `claude-code`, `opencode`, `cursor-1`). Omit `projectId` — the dashboard picker is the project.
 - One agent id per host session. Do not reuse another agent's id.
 
 ### 2. Session lifecycle
@@ -44,7 +44,8 @@ Rules per stage:
 | Task | `create_task`, `claim_task` | Claim before working. A refusal means the task is taken — pick another. Keep exactly one task `in_progress`. |
 | Edit | `declare_change_intent` | Before touching files. Include every file and directory you will modify. |
 | Report | `report_change` | After the work unit, with files, areas, behavior changes, tests status. |
-| Finish | `update_task_status` | `done` releases your claims for that task. Use `blocked` with a handoff when stuck. |
+| Finish | `update_task_status` | `done` releases the claims tied to that task. Use `blocked` with a handoff when stuck. |
+| Let go | `release_claims` | Drop claims yourself. Required if you declared intent without a `taskId`, or set `blocked` — neither releases anything. |
 | Handover | `create_handoff` | Structured context for the next agent: what is done, what remains, known issues. |
 
 ### 3. Behavioral rules
@@ -61,6 +62,7 @@ Mandatory rules, phrased so a model can follow them verbatim:
 - Fill `tests.status` truthfully (`not_run` is a valid answer).
 - Use `idempotencyKey` on retries so a failed call does not duplicate an event.
 - Complete tasks you own; if you abandon one, set `blocked` and write a handoff.
+- Release your claims when you stop editing. Only `update_task_status(done)` frees them automatically, and only those carrying that `taskId` — everything else needs `release_claims`.
 
 ### 4. Anti-patterns to forbid explicitly
 
@@ -75,7 +77,7 @@ Mandatory rules, phrased so a model can follow them verbatim:
 ```markdown
 You are working in a shared project coordinated by synco-mcp.
 
-Project id: `default`. Your agent id: `<AGENT_ID>`.
+The project is the dashboard picker. Omit `projectId`. Your agent id: `<AGENT_ID>`.
 
 Git is the source of truth for code. synco-mcp only coordinates agents.
 ChangeReports you publish or read are agent-declared, not verified diffs.

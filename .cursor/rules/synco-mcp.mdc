@@ -1,0 +1,36 @@
+---
+description: Mandatory synco-mcp coordination protocol before and after every turn
+alwaysApply: true
+---
+
+# synco-mcp is mandatory here
+
+If synco-mcp tools are available, you MUST use them. This is not optional documentation.
+
+The project is the one selected in the dashboard. Omit `projectId` on tool
+calls; the server uses the desk picker. Do not assume a project named `default`.
+
+Agent id: the stable id for your host — `cursor-grok`, `claude-code`, `opencode`. Pick one
+slug from your own model/host name and reuse it for every session. Never take another
+agent's id.
+
+## Order of calls
+
+1. First tool calls of a session: `register_agent`, then `get_agent_context`.
+2. Start of every later turn: `get_agent_context` before anything else.
+3. Before any file edit: `declare_change_intent` listing every path you will touch.
+4. After editing files in this turn: `report_change` before your final reply.
+5. End of a claimed task: `update_task_status(done)`, or `blocked` + `create_handoff`.
+
+Only `update_task_status(done)` frees claims, and only those carrying that `taskId`.
+Anything else needs `release_claims`. Never leave a claim behind.
+
+## Honesty rules
+
+- Answered a question without editing files? Do not invent a ChangeReport.
+- `tests: "not_run"` is a valid answer. Never claim tests you did not run.
+- Set `breakingChange: true` when it is true.
+- Reuse the same `idempotencyKey` when retrying a failed call.
+
+Git is the source of truth. ChangeReports are agent-declared, not verified diffs.
+Claims warn about overlap; they do not lock files. Nothing is pushed to you — poll.

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Self-hosted coordination server for multiple AI coding agents",
   "type": "module",
+  "bin": {
+    "synco": "scripts/synco-init.mjs"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -16,6 +19,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "init": "node scripts/synco-init.mjs",
     "dashboard:dev": "npm --prefix dashboard run dev",
     "dashboard:build": "npm --prefix dashboard run build",
     "build": "npm run dashboard:build"
