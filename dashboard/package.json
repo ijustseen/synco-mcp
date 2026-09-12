@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@convex-dev/auth": "^0.0.95",
+    "convex": "^1.45.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },

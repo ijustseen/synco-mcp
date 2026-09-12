@@ -1,5 +1,8 @@
+import { useAuthActions } from "@convex-dev/auth/react";
+import { useMutation, useQuery } from "convex/react";
 import { useMemo, useState, type ReactNode } from "react";
-import { addManualLog, createProject, logout, setActiveProject } from "./api";
+import { api } from "../../convex/_generated/api";
+import { convexSiteUrl, useAddManualLog, useCreateProject, useSetActiveProject } from "./api";
 import { AuthGate } from "./AuthGate";
 import {
   IconAgents,
@@ -209,7 +212,101 @@ function ChangeReportModal({
   );
 }
 
+function AgentKeysModal({ onClose }: { onClose: () => void }) {
+  const keys = useQuery(api.keys.listMine) ?? [];
+  const createKey = useMutation(api.keys.create);
+  const revokeKey = useMutation(api.keys.revoke);
+  const [name, setName] = useState("");
+  const [token, setToken] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const site = convexSiteUrl();
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/75 px-4" onClick={onClose}>
+      <div
+        className="w-full max-w-lg rounded-[16px] border border-white/10 bg-[#111111] p-5"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-medium tracking-tight">Agent keys</h2>
+            <p className="mt-1 text-[13px] text-[#9A9A94]">
+              Agents authenticate as you. They write to the project selected on this desk.
+            </p>
+          </div>
+          <button type="button" className="text-[13px] text-[#9A9A94]" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        {token && (
+          <div className="mt-4 rounded-lg bg-[#070707] px-3 py-2">
+            <p className="text-[12px] text-[#9A9A94]">Copy now — it will not be shown again.</p>
+            <p className="font-data mt-1 break-all text-[13px] text-[#E8B84A]">{token}</p>
+            <pre className="mt-3 overflow-auto text-[11px] text-[#D4D4D0]">{`{
+  "mcpServers": {
+    "synco-mcp": {
+      "url": "${site}/mcp",
+      "headers": { "Authorization": "Bearer ${token}" }
+    }
+  }
+}`}</pre>
+          </div>
+        )}
+        <form
+          className="mt-4 flex items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setBusy(true);
+            setError(null);
+            void createKey({ name: name.trim() || undefined })
+              .then((created) => {
+                setToken(created.token);
+                setName("");
+              })
+              .catch((err) => setError(err instanceof Error ? err.message : "Could not create key"))
+              .finally(() => setBusy(false));
+          }}
+        >
+          <input
+            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#070707] px-3 py-2 text-sm outline-none focus:border-[#E8B84A]"
+            placeholder="Cursor, Claude, OpenCode…"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+          <GoldButton type="submit" disabled={busy}>
+            {busy ? "Creating…" : "New key"}
+          </GoldButton>
+        </form>
+        {error && <p className="mt-2 text-[13px] text-[#E8B4B4]">{error}</p>}
+        <div className="mt-4 space-y-2">
+          {keys.length === 0 ? (
+            <p className="text-sm text-[#9A9A94]">No keys yet.</p>
+          ) : (
+            keys.map((key) => (
+              <div key={key.id} className="flex items-center justify-between gap-3 rounded-lg bg-[#070707] px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm">{key.name}</p>
+                  <p className="font-data text-[12px] text-[#9A9A94]">{key.prefix}…</p>
+                </div>
+                <button
+                  type="button"
+                  className="text-[12px] text-[#E8B4B4]"
+                  onClick={() => void revokeKey({ id: key.id })}
+                >
+                  Revoke
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AddLogForm({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const addManualLog = useAddManualLog();
   const [author, setAuthor] = useState("");
   const [summary, setSummary] = useState("");
   const [busy, setBusy] = useState(false);
@@ -275,7 +372,11 @@ function AddLogForm({ projectId, onClose }: { projectId: string; onClose: () => 
 function Desk({ session, setSession }: { session: SessionState; setSession: (next: SessionState) => void }) {
   const projectId = session.activeProjectId!;
   const { state, error, live, freshIds, now } = useDeskLive(projectId);
+  const createProject = useCreateProject();
+  const setActiveProject = useSetActiveProject();
+  const { signOut } = useAuthActions();
   const [logOpen, setLogOpen] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -303,6 +404,7 @@ function Desk({ session, setSession }: { session: SessionState; setSession: (nex
 
   return (
     <main className="min-h-screen bg-[#070707] text-[#F5F5F2]">
+      {keysOpen && <AgentKeysModal onClose={() => setKeysOpen(false)} />}
       {logOpen && <AddLogForm projectId={projectId} onClose={() => setLogOpen(false)} />}
       {reportOpen && lead && (
         <ChangeReportModal state={state} report={lead} onClose={() => setReportOpen(false)} />
@@ -370,25 +472,21 @@ function Desk({ session, setSession }: { session: SessionState; setSession: (nex
           </div>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-2 text-[13px] text-[#9A9A94]">
-              <span className={`h-1.5 w-1.5 rounded-full ${live === "sse" ? "live-dot bg-[#E8B84A]" : "bg-[#737373]"}`} />
-              {live === "sse" ? "Live" : live === "poll" ? "Polling" : "Connecting"}
+              <span className={`h-1.5 w-1.5 rounded-full ${live === "live" ? "live-dot bg-[#E8B84A]" : "bg-[#737373]"}`} />
+              {live === "live" ? "Live" : "Connecting"}
             </span>
             <span className="hidden text-[13px] text-[#9A9A94] sm:inline">{session.user.username}</span>
+            <button type="button" className="text-[13px] text-[#9A9A94]" onClick={() => setKeysOpen(true)}>
+              Agent keys
+            </button>
+            <button type="button" className="text-[13px] text-[#9A9A94]" onClick={() => void signOut()}>
+              Sign out
+            </button>
             <GoldButton onClick={() => setLogOpen(true)}>
               <span className="flex items-center gap-1.5">
                 <IconPlus /> Add log
               </span>
             </GoldButton>
-            <button
-              type="button"
-              className="text-[13px] text-[#9A9A94]"
-              onClick={() => {
-                void logout();
-                window.location.reload();
-              }}
-            >
-              Sign out
-            </button>
           </div>
         </div>
       </header>

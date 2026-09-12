@@ -5,7 +5,14 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ["dist/**", "dashboard/dist/**", "dashboard/node_modules/**", "node_modules/**", "data/**"],
+    ignores: [
+      "dist/**",
+      "dashboard/dist/**",
+      "dashboard/node_modules/**",
+      "node_modules/**",
+      "data/**",
+      "convex/_generated/**",
+    ],
   },
   {
     rules: {

@@ -22,7 +22,9 @@
     "init": "node scripts/synco-init.mjs",
     "dashboard:dev": "npm --prefix dashboard run dev",
     "dashboard:build": "npm --prefix dashboard run build",
-    "build": "npm run dashboard:build"
+    "build": "npm run dashboard:build",
+    "convex:dev": "convex dev",
+    "convex:deploy": "convex deploy"
   },
   "keywords": [
     "mcp",
@@ -31,8 +33,11 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@auth/core": "^0.41.3",
+    "@convex-dev/auth": "^0.0.95",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^12.11.1",
+    "convex": "^1.45.0",
     "cors": "^2.8.6",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",

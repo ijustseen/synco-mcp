@@ -69,7 +69,7 @@ persist event → in-process EventBus → dashboard SSE
 - **Git** is the source of truth for code. synco-mcp never claims a file changed just because an agent said so.
 - **SSE** is for the dashboard. Agents should poll `get_project_state` / `get_recent_changes`. Hosts do not reliably push MCP notifications into a running model.
 
-Later hosted mode (Convex + Render) is out of scope. Services do not import `better-sqlite3`, so storage can be swapped without rewriting tools.
+Hosted mode lives in `convex/`: same MCP tools and guard, Convex tables instead of SQLite. Local Express + SQLite in `src/` stays the self-host path. See [convex/README.md](convex/README.md).
 
 ## MCP tools
 
