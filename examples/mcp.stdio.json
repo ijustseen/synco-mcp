@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "synco-mcp": {
+      "command": "npx",
+      "args": ["tsx", "src/stdio.ts"],
+      "env": {
+        "SYNCO_DATABASE_PATH": "./data/synco.sqlite"
+      }
+    }
+  }
+}
