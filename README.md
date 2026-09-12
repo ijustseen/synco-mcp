@@ -146,10 +146,10 @@ Give each host a **stable unique `agentId`** (`cursor-grok`, `claude-code`, `ope
 ### 0. One command, every host, every repo
 
 ```bash
-npm run init            # or: npx synco init
+npm run init            # or: npx synco-mcp init
 ```
 
-`synco init` installs the **edit guard** into every agent host it finds on the machine, at
+`npx synco-mcp init` installs the **edit guard** into every agent host it finds on the machine, at
 the user level, so it covers all your repositories at once:
 
 | Host | What it writes | Blocking mechanism |
@@ -159,10 +159,10 @@ the user level, so it covers all your repositories at once:
 | opencode | `~/.config/opencode/plugins/` | plugin `tool.execute.before` throws |
 
 Useful flags: `--dry-run`, `--agent-id=cursor-andrew`, `--url=https://synco.example.com`,
-`--api-key=…`, `--project=<id>`, or a host name (`synco init cursor`) to limit the scope.
+`--api-key=…`, `--project=<id>`, or a host name (`npx synco-mcp init cursor`) to limit the scope.
 Existing hooks in those files are preserved, and re-running is a no-op.
 
-**A repo opts in with `.synco.json`** at its root (`synco init` writes one in the current
+**A repo opts in with `.synco.json`** at its root (`npx synco-mcp init` writes one in the current
 project):
 
 ```json
@@ -258,7 +258,7 @@ Do this on every machine / every developer profile that talks to the shared serv
 
 Rules can still be ignored. Hooks run outside the model.
 
-The blocking guard comes from `synco init` (section 0) because it needs a per-developer
+The blocking guard comes from `npx synco-mcp init` (section 0) because it needs a per-developer
 `agentId`. On top of it, this repo ships `.cursor/hooks.json` with three prompt hooks that
 nudge the protocol at session, turn and stop boundaries:
 

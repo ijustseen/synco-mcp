@@ -1,0 +1,27 @@
+{
+  "name": "synco-mcp",
+  "version": "0.1.0",
+  "description": "Install the synco-mcp edit guard for Cursor, Claude Code, and opencode",
+  "type": "module",
+  "bin": {
+    "synco-mcp": "bin.mjs"
+  },
+  "files": [
+    "bin.mjs",
+    "integrations"
+  ],
+  "scripts": {
+    "prepack": "node prepack.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "synco",
+    "cursor",
+    "claude-code",
+    "opencode"
+  ],
+  "license": "MIT"
+}
